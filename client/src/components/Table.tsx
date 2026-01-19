@@ -1,4 +1,5 @@
 import React from 'react';
+import { Loader2, AlertCircle } from 'lucide-react';
 
 interface Column {
     key: string;
@@ -13,50 +14,69 @@ interface TableProps<T> {
     error?: string | null;
 }
 
-const styles = {
-    table: { width: '100%', borderCollapse: 'collapse' as const, marginTop: '20px' },
-    th: { border: '1px solid #3c4049', padding: '8px 12px', textAlign: 'left' as const, backgroundColor: '#20232a', color: '#61dafb' },
-    td: { border: '1px solid #3c4049', padding: '8px 12px' },
-    tr: { backgroundColor: '#282c34' },
-    trAlt: { backgroundColor: '#20232a' },
-};
-
 function Table<T extends Record<string, any>>({ data, columns, title, loading = false, error }: TableProps<T>) {
     if (loading) {
-        return <div>Loading...</div>;
+        return (
+            <div className="flex items-center justify-center p-8 text-muted-foreground">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                <span>Loading...</span>
+            </div>
+        );
     }
 
     if (error) {
-        return <div style={{ color: '#ff6961' }}>Error: {error}</div>;
-    }
-
-    if (data.length === 0) {
-        return <div>No data available.</div>;
+        return (
+            <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-4 text-destructive">
+                <AlertCircle className="h-5 w-5" />
+                <span>Error: {error}</span>
+            </div>
+        );
     }
 
     return (
-        <div>
-            {title && <h3 style={{ color: '#61dafb', marginBottom: '10px' }}>{title}</h3>}
-            <table style={styles.table}>
-                <thead>
-                    <tr>
-                        {columns.map((col) => (
-                            <th key={col.key} style={styles.th}>{col.label}</th>
-                        ))}
-                    </tr>
-                </thead>
-                <tbody>
-                    {data.map((item, index) => (
-                        <tr key={index} style={index % 2 === 0 ? styles.tr : styles.trAlt}>
-                            {columns.map((col) => (
-                                <td key={col.key} style={styles.td}>
-                                    {item[col.key] || '-'}
-                                </td>
-                            ))}
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
+        <div className="space-y-4">
+            {title && <h3 className="text-lg font-medium tracking-tight">{title}</h3>}
+            
+            <div className="rounded-md border bg-card">
+                <div className="relative w-full overflow-auto">
+                    <table className="w-full caption-bottom text-sm">
+                        <thead className="[&_tr]:border-b">
+                            <tr className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
+                                {columns.map((col) => (
+                                    <th 
+                                        key={col.key} 
+                                        className="h-12 px-4 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0"
+                                    >
+                                        {col.label}
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody className="[&_tr:last-child]:border-0">
+                            {data.length === 0 ? (
+                                <tr>
+                                    <td colSpan={columns.length} className="h-24 text-center">
+                                        No data available.
+                                    </td>
+                                </tr>
+                            ) : (
+                                data.map((item, index) => (
+                                    <tr 
+                                        key={index} 
+                                        className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted"
+                                    >
+                                        {columns.map((col) => (
+                                            <td key={col.key} className="p-4 align-middle [&:has([role=checkbox])]:pr-0">
+                                                {item[col.key] || '-'}
+                                            </td>
+                                        ))}
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     );
 }
