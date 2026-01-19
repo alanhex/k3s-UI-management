@@ -758,19 +758,27 @@ app.post('/api/clusters/:name/switch', async (req, res) => {
 // Check if k3d is installed
 app.get('/api/k3d/status', async (req, res) => {
     try {
-        const output = await executeKubectl(`k3d cluster list -o json`);
-        const clusters = JSON.parse(output);
-        res.json(clusters);
+        const output = await executeK3d('cluster list --output json');
+        res.json({ installed: true, version: 'installed' });
     } catch (error) {
         console.error('k3d status error:', error);
-        res.status(500).json({ error: 'Failed to get k3d status', details: error.message });
+        // Check if the error is related to Docker not running
+        const errorMessage = error.message;
+        if (errorMessage.includes('Cannot connect to the Docker daemon') ||
+            errorMessage.includes('docker daemon running')) {
+            res.status(500).json({ installed: false, error: 'Docker daemon is not running' });
+        } else if (errorMessage.includes('k3d: command not found') || errorMessage.includes('no such file')) {
+            res.status(500).json({ installed: false, error: 'k3d is not installed' });
+        } else {
+            res.status(500).json({ installed: false, error: error.message });
+        }
     }
 });
 
 // Get cluster version info
 app.get('/api/cluster/version', async (req, res) => {
     try {
-        const k8sVersion = await executeKubectl(`version --short --client=false`);
+        const k8sVersion = await executeKubectl('version');
         const k3dVersion = await new Promise((resolve, reject) => {
             exec('k3d version', (error, stdout) => {
                 if (error) resolve('Not available');
