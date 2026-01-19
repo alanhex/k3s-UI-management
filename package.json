@@ -1,0 +1,18 @@
+{
+  "name": "k3s-ui-management",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev:server": "npm start --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "dev": "npm-run-all --parallel dev:server dev:client",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  }
+}
