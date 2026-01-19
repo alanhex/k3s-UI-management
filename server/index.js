@@ -1,7 +1,10 @@
 import express from 'express';
 import cors from 'cors';
 import * as k8s from '@kubernetes/client-node';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 const app = express();
 const port = 3001;
@@ -60,6 +63,40 @@ function executeKubectl(command) {
 }
 
 /**
+ * Executes a kubectl command with input (stdin) using child_process.spawn.
+ * Useful for 'apply -f -'
+ * @param {string[]} args - Array of arguments for kubectl
+ * @param {string} input - The input string to write to stdin
+ * @returns {Promise<string>}
+ */
+function executeKubectlWithStdin(args, input) {
+    return new Promise((resolve, reject) => {
+        const kubectl = spawn('kubectl', args);
+        let stdout = '';
+        let stderr = '';
+
+        kubectl.stdout.on('data', (data) => {
+            stdout += data;
+        });
+
+        kubectl.stderr.on('data', (data) => {
+            stderr += data;
+        });
+
+        kubectl.on('close', (code) => {
+            if (code !== 0) {
+                reject(new Error(stderr.trim() || `Command failed with code ${code}`));
+            } else {
+                resolve(stdout.trim());
+            }
+        });
+
+        kubectl.stdin.write(input);
+        kubectl.stdin.end();
+    });
+}
+
+/**
  * Executes a k3d command using child_process.exec.
  * Tries system path first, then user local path.
  * @param {string} command - The k3d command to execute (e.g., 'cluster create mycluster')
@@ -93,6 +130,307 @@ function executeK3d(command) {
 
 // --- API Endpoints: Visualization ---
 
+// Get Namespaces
+app.get('/api/namespaces', async (req, res) => {
+    try {
+        const output = await executeKubectl('get namespaces -o json');
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error('Error fetching namespaces:', error);
+        res.status(500).json({ error: 'Failed to fetch namespaces', details: error.message });
+    }
+});
+
+// --- Storage Endpoints ---
+
+// Get PersistentVolumes
+app.get('/api/persistentvolumes', async (req, res) => {
+    try {
+        const output = await executeKubectl('get pv -o json');
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error('Error fetching PVs:', error);
+        res.status(500).json({ error: 'Failed to fetch PVs', details: error.message });
+    }
+});
+
+// Get PersistentVolumeClaims
+app.get('/api/persistentvolumeclaims', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        const output = await executeKubectl(`get pvc -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error(`Error fetching PVCs in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch PVCs`, details: error.message });
+    }
+});
+
+// Get StorageClasses
+app.get('/api/storageclasses', async (req, res) => {
+    try {
+        const output = await executeKubectl('get sc -o json');
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error('Error fetching StorageClasses:', error);
+        res.status(500).json({ error: 'Failed to fetch StorageClasses', details: error.message });
+    }
+});
+
+// Search Artifact Hub for Helm charts
+app.get('/api/helm/search', async (req, res) => {
+    const { query } = req.query;
+    if (!query) {
+        return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    try {
+        // kind=0 filters for Helm charts only
+        const artifactHubUrl = `https://artifacthub.io/api/v1/packages/search?kind=0&ts_query=${encodeURIComponent(query)}`;
+        const response = await fetch(artifactHubUrl);
+        
+        if (!response.ok) {
+            throw new Error(`Artifact Hub API failed with status ${response.status}`);
+        }
+        
+        const data = await response.json();
+        res.json(data);
+    } catch (error) {
+        console.error('Helm search error:', error);
+        res.status(500).json({ error: 'Failed to search Helm charts' });
+    }
+});
+
+// Install Helm chart
+app.post('/api/helm/install', async (req, res) => {
+    const { chart, repo, version, releaseName, namespace, valuesYaml } = req.body;
+
+    if (!chart || !repo || !releaseName || !namespace) {
+        return res.status(400).json({ error: 'Chart, repo, releaseName, and namespace are required' });
+    }
+
+    try {
+        let command = `helm install ${releaseName} ${chart}`;
+        if (repo) command += ` --repo ${repo}`;
+        if (version) command += ` --version ${version}`;
+        command += ` --namespace ${namespace}`;
+        if (valuesYaml) {
+            // Write values to temp file
+            const fs = require('fs');
+            const path = require('path');
+            const os = require('os');
+            const tempFile = path.join(os.tmpdir(), `helm-values-${Date.now()}.yaml`);
+            fs.writeFileSync(tempFile, valuesYaml);
+            command += ` --values ${tempFile}`;
+        }
+        command += ` --create-namespace`;
+
+        console.log(`Executing: ${command}`);
+        const result = await new Promise((resolve, reject) => {
+            exec(command, (error, stdout, stderr) => {
+                if (error) {
+                    reject(new Error(stderr.trim() || error.message));
+                } else {
+                    resolve(stdout.trim());
+                }
+            });
+        });
+        res.json({ success: true, output: result });
+    } catch (error) {
+        console.error('Helm install error:', error);
+        res.status(500).json({ error: 'Failed to install Helm chart', details: error.message });
+    }
+});
+
+// Get PersistentVolumeClaims
+app.get('/api/persistentvolumeclaims', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        const output = await executeKubectl(`get pvc -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error(`Error fetching PVCs in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch PVCs`, details: error.message });
+    }
+});
+
+// Get StorageClasses
+app.get('/api/storageclasses', async (req, res) => {
+    try {
+        const output = await executeKubectl('get sc -o json');
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error('Error fetching StorageClasses:', error);
+        res.status(500).json({ error: 'Failed to fetch StorageClasses', details: error.message });
+    }
+});
+
+// --- Access Control Endpoints (RBAC) ---
+
+// Get ServiceAccounts
+app.get('/api/serviceaccounts', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        const output = await executeKubectl(`get serviceaccounts -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error(`Error fetching ServiceAccounts in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch ServiceAccounts`, details: error.message });
+    }
+});
+
+// Get Roles
+app.get('/api/roles', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        const output = await executeKubectl(`get roles -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error(`Error fetching Roles in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch Roles`, details: error.message });
+    }
+});
+
+// Get ClusterRoles
+app.get('/api/clusterroles', async (req, res) => {
+    try {
+        const output = await executeKubectl(`get clusterroles -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error(`Error fetching ClusterRoles:`, error);
+        res.status(500).json({ error: `Failed to fetch ClusterRoles`, details: error.message });
+    }
+});
+
+// Get RoleBindings
+app.get('/api/rolebindings', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        const output = await executeKubectl(`get rolebindings -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error(`Error fetching RoleBindings in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch RoleBindings`, details: error.message });
+    }
+});
+
+// --- Helm Management (k3s CRDs) ---
+
+// Get HelmCharts
+app.get('/api/helmcharts', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        // k3s stores HelmCharts in helm.cattle.io group
+        const output = await executeKubectl(`get helmcharts.helm.cattle.io -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        // If CRD doesn't exist (not k3s?), return empty list gracefully
+        if (error.message.includes('error: the server doesn\'t have a resource type')) {
+            return res.json([]);
+        }
+        console.error(`Error fetching HelmCharts in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch HelmCharts`, details: error.message });
+    }
+});
+
+// Get HelmChartConfigs
+app.get('/api/helmchartconfigs', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        const output = await executeKubectl(`get helmchartconfigs.helm.cattle.io -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        if (error.message.includes('error: the server doesn\'t have a resource type')) {
+            return res.json([]);
+        }
+        console.error(`Error fetching HelmChartConfigs in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch HelmChartConfigs`, details: error.message });
+    }
+});
+
+// --- Configuration Endpoints ---
+
+// Get ConfigMaps
+app.get('/api/configmaps', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        const output = await executeKubectl(`get configmaps -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error(`Error fetching ConfigMaps in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch ConfigMaps`, details: error.message });
+    }
+});
+
+// Get Secrets
+app.get('/api/secrets', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        const output = await executeKubectl(`get secrets -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error(`Error fetching Secrets in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch Secrets`, details: error.message });
+    }
+});
+
+// --- Network Endpoints ---
+
+// Get Ingresses
+app.get('/api/ingresses', async (req, res) => {
+    const { namespace = 'default' } = req.query;
+    try {
+        const nsFlag = namespace === 'all' ? '--all-namespaces' : `-n ${namespace}`;
+        const output = await executeKubectl(`get ingresses ${nsFlag} -o json`);
+        const ingresses = JSON.parse(output);
+        res.json(namespace === 'all' ? ingresses.items : ingresses.items);
+    } catch (error) {
+        console.error('Ingresses fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch ingresses' });
+    }
+});
+
 // Get Nodes
 app.get('/api/nodes', async (req, res) => {
     try {
@@ -107,49 +445,138 @@ app.get('/api/nodes', async (req, res) => {
 
 // Get Pods
 app.get('/api/pods', async (req, res) => {
-    let namespace = 'default';
-    if (req.query.namespace && typeof req.query.namespace === 'string') {
-        namespace = req.query.namespace;
-    }
+    const { namespace = 'default' } = req.query;
     try {
-        const output = await executeKubectl(`get pods -n ${namespace} -o json`);
-        const data = JSON.parse(output);
-        res.json(data.items);
+        const nsFlag = namespace === 'all' ? '--all-namespaces' : `-n ${namespace}`;
+        const output = await executeKubectl(`get pods ${nsFlag} -o json`);
+        const pods = JSON.parse(output);
+        res.json(namespace === 'all' ? pods.items : pods.items);
     } catch (error) {
-        console.error(`Error fetching pods in namespace ${namespace}:`, error);
-        res.status(500).json({ error: `Failed to fetch pods in namespace ${namespace}`, details: error.message });
+        console.error('Pods fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch pods' });
     }
 });
 
 // Get Deployments
 app.get('/api/deployments', async (req, res) => {
-    let namespace = 'default';
-    if (req.query.namespace && typeof req.query.namespace === 'string') {
-        namespace = req.query.namespace;
-    }
+    const { namespace = 'default' } = req.query;
     try {
-        const output = await executeKubectl(`get deployments -n ${namespace} -o json`);
-        const data = JSON.parse(output);
-        res.json(data.items);
+        const nsFlag = namespace === 'all' ? '--all-namespaces' : `-n ${namespace}`;
+        const output = await executeKubectl(`get deployments ${nsFlag} -o json`);
+        const deployments = JSON.parse(output);
+        res.json(namespace === 'all' ? deployments.items : deployments.items);
     } catch (error) {
-        console.error(`Error fetching deployments in namespace ${namespace}:`, error);
-        res.status(500).json({ error: `Failed to fetch deployments in namespace ${namespace}`, details: error.message });
+        console.error('Deployments fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch deployments' });
     }
 });
 
 // Get Services
 app.get('/api/services', async (req, res) => {
+    const { namespace = 'default' } = req.query;
+    try {
+        const nsFlag = namespace === 'all' ? '--all-namespaces' : `-n ${namespace}`;
+        const output = await executeKubectl(`get services ${nsFlag} -o json`);
+        const services = JSON.parse(output);
+        res.json(namespace === 'all' ? services.items : services.items);
+    } catch (error) {
+        console.error('Services fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch services' });
+    }
+});
+
+// Get DaemonSets
+app.get('/api/daemonsets', async (req, res) => {
     let namespace = 'default';
     if (req.query.namespace && typeof req.query.namespace === 'string') {
         namespace = req.query.namespace;
     }
     try {
-        const output = await executeKubectl(`get services -n ${namespace} -o json`);
+        const output = await executeKubectl(`get daemonsets -n ${namespace} -o json`);
         const data = JSON.parse(output);
         res.json(data.items);
     } catch (error) {
-        console.error(`Error fetching services in namespace ${namespace}:`, error);
-        res.status(500).json({ error: `Failed to fetch services in namespace ${namespace}`, details: error.message });
+        console.error(`Error fetching daemonsets in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch daemonsets in namespace ${namespace}`, details: error.message });
+    }
+});
+
+// Get ReplicaSets
+app.get('/api/replicasets', async (req, res) => {
+    let namespace = 'default';
+    if (req.query.namespace && typeof req.query.namespace === 'string') {
+        namespace = req.query.namespace;
+    }
+    try {
+        const output = await executeKubectl(`get replicasets -n ${namespace} -o json`);
+        const data = JSON.parse(output);
+        res.json(data.items);
+    } catch (error) {
+        console.error(`Error fetching replicasets in namespace ${namespace}:`, error);
+        res.status(500).json({ error: `Failed to fetch replicasets in namespace ${namespace}`, details: error.message });
+    }
+});
+
+// --- Generic Resource Management Endpoints ---
+
+// Get Resource YAML
+app.get('/api/resources/:type/:name/yaml', async (req, res) => {
+    const { type, name } = req.params;
+    const namespace = String(req.query.namespace || 'default');
+    
+    try {
+        const output = await executeKubectl(`get ${type} ${name} -n ${namespace} -o yaml`);
+        res.json({ yaml: output });
+    } catch (error) {
+        console.error(`Error fetching YAML for ${type}/${name}:`, error);
+        res.status(500).json({ error: `Failed to fetch YAML`, details: error.message });
+    }
+});
+
+// Apply Resource (Create/Update) via YAML
+app.post('/api/resources/apply', async (req, res) => {
+    const { yaml } = req.body;
+    if (!yaml) return res.status(400).json({ error: 'YAML content is required' });
+
+    try {
+        const output = await executeKubectlWithStdin(['apply', '-f', '-'], yaml);
+        res.json({ message: 'Resource applied successfully', output });
+    } catch (error) {
+        console.error('Error applying resource:', error);
+        res.status(500).json({ error: 'Failed to apply resource', details: error.message });
+    }
+});
+
+// Delete Resource
+app.delete('/api/resources/:type/:name', async (req, res) => {
+    const { type, name } = req.params;
+    const namespace = String(req.query.namespace || 'default');
+
+    try {
+        await executeKubectl(`delete ${type} ${name} -n ${namespace}`);
+        res.json({ message: `${type} ${name} deleted successfully` });
+    } catch (error) {
+        console.error(`Error deleting ${type}/${name}:`, error);
+        res.status(500).json({ error: `Failed to delete ${type}`, details: error.message });
+    }
+});
+
+// Scale Resource
+app.post('/api/resources/:type/:name/scale', async (req, res) => {
+    const { type, name } = req.params;
+    const namespace = String(req.query.namespace || 'default');
+    const { replicas } = req.body;
+
+    if (replicas === undefined || replicas === null) {
+        return res.status(400).json({ error: 'Replicas count is required' });
+    }
+
+    try {
+        await executeKubectl(`scale ${type} ${name} --replicas=${replicas} -n ${namespace}`);
+        res.json({ message: `${type} ${name} scaled to ${replicas} replicas` });
+    } catch (error) {
+        console.error(`Error scaling ${type}/${name}:`, error);
+        res.status(500).json({ error: `Failed to scale ${type}`, details: error.message });
     }
 });
 
@@ -331,21 +758,41 @@ app.post('/api/clusters/:name/switch', async (req, res) => {
 // Check if k3d is installed
 app.get('/api/k3d/status', async (req, res) => {
     try {
-        // Check if k3d command exists and get version (will try both system and user paths)
-        const output = await executeK3d('--version');
-        const versionMatch = output.match(/k3d version (v?\d+\.\d+\.\d+)/i);
-        const version = versionMatch ? versionMatch[1] : 'unknown';
-
-        res.json({
-            installed: true,
-            version: version,
-            output: output.trim()
-        });
+        const output = await executeKubectl(`k3d cluster list -o json`);
+        const clusters = JSON.parse(output);
+        res.json(clusters);
     } catch (error) {
-        res.json({
-            installed: false,
-            error: error.message
+        console.error('k3d status error:', error);
+        res.status(500).json({ error: 'Failed to get k3d status', details: error.message });
+    }
+});
+
+// Get cluster version info
+app.get('/api/cluster/version', async (req, res) => {
+    try {
+        const k8sVersion = await executeKubectl(`version --short --client=false`);
+        const k3dVersion = await new Promise((resolve, reject) => {
+            exec('k3d version', (error, stdout) => {
+                if (error) resolve('Not available');
+                else resolve(stdout.trim().split('\n')[0]);
+            });
         });
+        res.json({ k8s: k8sVersion.trim(), k3d: k3dVersion });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to get version info' });
+    }
+});
+
+// Get recent cluster events
+app.get('/api/events', async (req, res) => {
+    try {
+        const output = await executeKubectl(`get events --all-namespaces --sort-by=.lastTimestamp -o json`);
+        const events = JSON.parse(output);
+        // Return last 10 events
+        res.json(events.items.slice(-10));
+    } catch (error) {
+        console.error('Events fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch events' });
     }
 });
 
