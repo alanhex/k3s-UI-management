@@ -594,8 +594,8 @@ app.get('/api/resources/:type/:name/yaml', async (req, res, next) => {
         const { type, name } = req.params;
         const namespace = validateNamespace(req.query.namespace);
 
-        // Validate resource type
-        const allowedTypes = ['pod', 'service', 'deployment', 'configmap', 'secret', 'ingress', 'daemonset', 'replicaset', 'statefulset', 'job', 'cronjob'];
+        // Validate resource type - accept both singular and plural forms (both valid in kubectl)
+        const allowedTypes = ['pod', 'pods', 'service', 'services', 'deployment', 'deployments', 'configmap', 'configmaps', 'secret', 'secrets', 'ingress', 'ingresses', 'daemonset', 'daemonsets', 'replicaset', 'replicasets', 'statefulset', 'statefulsets', 'job', 'jobs', 'cronjob', 'cronjobs'];
         if (!allowedTypes.includes(type.toLowerCase())) {
             return next(new ApiError(400, `Resource type '${type}' is not allowed`));
         }
@@ -641,8 +641,8 @@ app.delete('/api/resources/:type/:name', async (req, res, next) => {
         const { type, name } = req.params;
         const namespace = validateNamespace(req.query.namespace);
 
-        // Validate resource type
-        const allowedTypes = ['pod', 'service', 'deployment', 'configmap', 'secret', 'ingress', 'daemonset', 'replicaset', 'statefulset', 'job', 'cronjob'];
+        // Validate resource type - accept both singular and plural forms (both valid in kubectl)
+        const allowedTypes = ['pod', 'pods', 'service', 'services', 'deployment', 'deployments', 'configmap', 'configmaps', 'secret', 'secrets', 'ingress', 'ingresses', 'daemonset', 'daemonsets', 'replicaset', 'replicasets', 'statefulset', 'statefulsets', 'job', 'jobs', 'cronjob', 'cronjobs'];
         if (!allowedTypes.includes(type.toLowerCase())) {
             return next(new ApiError(400, `Resource type '${type}' is not allowed`));
         }
@@ -662,8 +662,8 @@ app.post('/api/resources/:type/:name/scale', async (req, res, next) => {
         const namespace = validateNamespace(req.query.namespace);
         const { replicas } = req.body;
 
-        // Validate resource type (only scalable types)
-        const scalableTypes = ['deployment', 'replicaset', 'statefulset'];
+        // Validate resource type (only scalable types - allow both singular and plural forms like real kubectl)
+        const scalableTypes = ['deployment', 'deployments', 'replicaset', 'replicasets', 'statefulset', 'statefulsets'];
         if (!scalableTypes.includes(type.toLowerCase())) {
             return next(new ApiError(400, `Resource type '${type}' cannot be scaled`));
         }
