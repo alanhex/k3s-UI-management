@@ -124,8 +124,34 @@ const sanitizeCommand = (command) => {
 };
 
 const validateKubectlCommand = (kubectlCommand) => {
+    // Handle common concatenated commands like "getnodes" -> "get nodes"
+    let processedCommand = kubectlCommand;
+    
+    // Common concatenated commands and their proper forms
+    const concatenatedCommands = {
+        'getnodes': 'get nodes',
+        'getpods': 'get pods',
+        'getservices': 'get services',
+        'getdeployments': 'get deployments',
+        'getsvc': 'get svc',
+        'getpo': 'get po',
+        'getno': 'get no',
+        'describenodes': 'describe nodes',
+        'describepods': 'describe pods',
+        'describeservices': 'describe services',
+        'describedeployments': 'describe deployments'
+    };
+    
+    // Check if the command starts with any known concatenated pattern
+    for (const [concatenated, proper] of Object.entries(concatenatedCommands)) {
+        if (processedCommand.startsWith(concatenated)) {
+            processedCommand = processedCommand.replace(concatenated, proper);
+            break;
+        }
+    }
+    
     // Extract the subcommand (first word after kubectl)
-    const match = kubectlCommand.match(/^(\w+)/);
+    const match = processedCommand.match(/^(\w+)/);
     if (!match) {
         throw new ApiError(400, 'Invalid kubectl command');
     }
@@ -136,12 +162,12 @@ const validateKubectlCommand = (kubectlCommand) => {
     }
 
     // Additional restrictions for dangerous operations
-    if (subcommand === 'delete' && !kubectlCommand.includes('--dry-run')) {
+    if (subcommand === 'delete' && !processedCommand.includes('--dry-run')) {
         // Allow delete but log it
-        console.warn(`[SECURITY] Delete command executed: ${kubectlCommand}`);
+        console.warn(`[SECURITY] Delete command executed: ${processedCommand}`);
     }
 
-    return sanitizeCommand(kubectlCommand);
+    return sanitizeCommand(processedCommand);
 };
 
 // --- Helper Functions ---
